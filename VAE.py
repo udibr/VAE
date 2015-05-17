@@ -9,7 +9,7 @@ import theano.tensor as T
 import blocks
 from blocks.algorithms import GradientDescent, Adam
 from blocks.bricks import MLP, Tanh, WEIGHT, Rectifier
-from blocks.initialization import Constant, NdarrayInitialization, Sparse
+from blocks.initialization import Constant, NdarrayInitialization, Sparse, Orthogonal
 from fuel.streams import DataStream
 from fuel.datasets import MNIST
 from fuel.schemes import SequentialScheme
@@ -63,19 +63,7 @@ class Qlinear(Initializable):
 
     @application(inputs=['x'], outputs=['z', 'kl_term'])
     def sample(self, x):
-        """Return a samples and the corresponding KL term
-
-        Parameters
-        ----------
-        x :
-
-        Returns
-        -------
-        z : tensor.matrix
-            Samples drawn from Q(z|x)
-        kl : tensor.vector
-            KL(Q(z|x) || P_z)
-
+        """Sampling is trivial in this case
         """
         mean = self.mean_transform.apply(x)
 
@@ -198,40 +186,6 @@ class VAEModel(Initializable):
 
 #-----------------------------------------------------------------------------
 
-
-# Hopefully this will be soon part of blocks
-class Xavier(NdarrayInitialization):
-    """Initialize with Gaussian distribution with Xavier parameters.
-
-    Use the following gaussian parameters: mean=0 and std=sqrt(scale/Nin)
-
-
-    Parameters
-    ----------
-    scale : float
-        1 for linear/tanh/sigmoid. 2 for RELU
-
-    Notes
-    -----
-    For more information, see [GLOROT]_.
-    See also  http://andyljones.tumblr.com/post/110998971763/an-explanation-of-xavier-initialization
-
-
-    .. [GLOROT] Glorot et al. *Understanding the difficulty of training
-      deep feedforward neural networks*, International conference on
-      artificial intelligence and statistics, 249-256
-      http://jmlr.org/proceedings/papers/v9/glorot10a/glorot10a.pdf
-
-    """
-    def __init__(self, scale=1):
-        self._scale = float(scale)
-
-    def generate(self, rng, shape):
-        std = np.sqrt(self._scale/shape[-1])
-        m = rng.normal(0., std, size=shape)
-        return m.astype(theano.config.floatX)
-#-----------------------------------------------------------------------------
-
 def shnum(value):
     """ Convert a float into a short tag-usable string representation. E.g.:
         0 ->
@@ -246,7 +200,8 @@ def shnum(value):
     leading = ("%e"%value)[0]
     return "%s%d" % (leading, -exp)
 
-def main(name, model, epochs, batch_size, learning_rate, bokeh, layers, gamma, rectifier, predict, dropout, qlinear, sparse):
+def main(name, model, epochs, batch_size, learning_rate, bokeh, layers, gamma,
+         rectifier, predict, dropout, qlinear, sparse):
     runname = "vae%s-L%s%s%s%s-l%s-g%s-b%d" % (name, layers,
                                             'r' if rectifier else '',
                                             'd' if dropout else '',
@@ -254,10 +209,10 @@ def main(name, model, epochs, batch_size, learning_rate, bokeh, layers, gamma, r
                                       shnum(learning_rate), shnum(gamma), batch_size//100)
     if rectifier:
         activation = Rectifier()
-        full_weights_init = Xavier(2)
+        full_weights_init = Orthogonal()
     else:
         activation = Tanh()
-        full_weights_init = Xavier(1)
+        full_weights_init = Orthogonal()
 
     if sparse:
         runname += '-s%d'%sparse
@@ -302,7 +257,6 @@ def main(name, model, epochs, batch_size, learning_rate, bokeh, layers, gamma, r
 
         cost = recons_term + kl_terms.mean()
         cg = ComputationGraph([cost])
-
 
         if gamma > 0:
             weights = VariableFilter(roles=[WEIGHT])(cg.variables)
