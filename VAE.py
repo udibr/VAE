@@ -9,29 +9,37 @@ import theano.tensor as T
 import blocks
 from blocks.algorithms import GradientDescent, Adam
 from blocks.bricks import MLP, Tanh, WEIGHT, Rectifier
-from blocks.initialization import Constant, NdarrayInitialization, Sparse, Orthogonal
+from blocks.initialization import Constant, Sparse, Orthogonal
 from fuel.streams import DataStream
 from fuel.datasets import MNIST
-from fuel.schemes import SequentialScheme
+from fuel.schemes import SequentialScheme, ShuffledScheme
 from blocks.filter import VariableFilter
 from blocks.graph import ComputationGraph, apply_dropout
 from blocks.model import Model
 from blocks.monitoring import aggregation
 from blocks.extensions import FinishAfter, Timing, Printing
-from blocks.extensions.saveload import Dump, LoadFromDump
+from blocks.extensions.saveload import Checkpoint, Load
 from blocks.extensions.monitoring import (DataStreamMonitoring,
                                           TrainingDataMonitoring)
 from blocks.extensions.plot import Plot
 from blocks.main_loop import MainLoop
 
 from blocks.bricks.cost import BinaryCrossEntropy
-from blocks.bricks import Sigmoid
+from blocks.bricks import Logistic
 import fuel
 import os
 from fuel.datasets.hdf5 import H5PYDataset
 floatX = theano.config.floatX
 import numpy as np
 import cPickle as pickle
+from fuel.transformers import Flatten
+
+import sys
+if sys.gettrace() is not None:
+    print "Debugging"
+    theano.config.optimizer='fast_compile' #"None"  #
+    theano.config.exception_verbosity='high'
+    theano.config.compute_test_value = 'warn'
 
 #-----------------------------------------------------------------------------
 from blocks.bricks import Initializable, Random, Linear
@@ -188,7 +196,7 @@ class VAEModel(Initializable):
 
 def shnum(value):
     """ Convert a float into a short tag-usable string representation. E.g.:
-        0 ->
+        <=0 -> 0
         0.1   -> 11
         0.01  -> 12
         0.001 -> 13
@@ -236,7 +244,7 @@ def main(name, model, epochs, batch_size, learning_rate, bokeh, layers, gamma,
 
     decoder_layers = layers[:]  ## includes z_dim as first layer
     decoder_layers.reverse()
-    decoder_mlp = MLP([activation] * (len(decoder_layers)-2) + [Sigmoid()],
+    decoder_mlp = MLP([activation] * (len(decoder_layers)-2) + [Logistic()],
               decoder_layers,
               name="MLP_dec", biases_init=Constant(0.), weights_init=weights_init)
 
@@ -244,7 +252,8 @@ def main(name, model, epochs, batch_size, learning_rate, bokeh, layers, gamma,
     vae = VAEModel(encoder_mlp, sampler, decoder_mlp)
     vae.initialize()
 
-    x = tensor.matrix('features')
+    x = tensor.matrix('features')/256.
+    x.tag.test_value = np.random.random((batch_size,layers[0])).astype(np.float32)
 
     if predict:
         mean_z, enc = vae.mean_z(x)
@@ -266,9 +275,12 @@ def main(name, model, epochs, batch_size, learning_rate, bokeh, layers, gamma,
         newmodel = Model(cost)
 
         if dropout:
-            weights = [v for k,v in newmodel.get_params().iteritems()
-                       if k.find('MLP')>=0 and k.endswith('.W') and not k.endswith('MLP_enc/linear_0.W')]
-            cg = apply_dropout(cg,weights,0.5)
+            from blocks.roles import INPUT
+            inputs = VariableFilter(roles=[INPUT])(cg.variables)
+            # dropout_target = [v for k,v in newmodel.get_params().iteritems()
+            #            if k.find('MLP')>=0 and k.endswith('.W') and not k.endswith('MLP_enc/linear_0.W')]
+            dropout_target = filter(lambda x: x.name.startswith('linear_'), inputs)
+            cg = apply_dropout(cg, dropout_target, 0.5)
             target_cost = cg.outputs[0]
         else:
             target_cost = cost
@@ -287,12 +299,12 @@ def main(name, model, epochs, batch_size, learning_rate, bokeh, layers, gamma,
         else:
             train_ds = H5PYDataset(datasource_fname, which_set='train', sources=['features'])
         test_ds = H5PYDataset(datasource_fname, which_set='test')
-    train_s = DataStream(train_ds,
-                 iteration_scheme=SequentialScheme(
-                     train_ds.num_examples, batch_size))
-    test_s = DataStream(test_ds,
-                 iteration_scheme=SequentialScheme(
-                     test_ds.num_examples, batch_size))
+    train_s = Flatten(DataStream(train_ds,
+                 iteration_scheme=ShuffledScheme(
+                     train_ds.num_examples, batch_size)))
+    test_s = Flatten(DataStream(test_ds,
+                 iteration_scheme=ShuffledScheme(
+                     test_ds.num_examples, batch_size)))
 
     if predict:
         from itertools import chain
@@ -327,18 +339,19 @@ def main(name, model, epochs, batch_size, learning_rate, bokeh, layers, gamma,
         with open(name+'_labels.pkl','wb') as fp:
             pickle.dump(alllabels, fp, -1)
     else:
+        cg = ComputationGraph([target_cost])
         algorithm = GradientDescent(
             cost=target_cost, params=cg.parameters,
             step_rule=Adam(learning_rate)  # Scale(learning_rate=learning_rate)
         )
         extensions = []
         if model:
-            extensions.append(LoadFromDump(model))
+            extensions.append(Load(model))
 
         extensions += [Timing(),
                       FinishAfter(after_n_epochs=epochs),
                       DataStreamMonitoring(
-                          [recons_term, cost],
+                          [cost, recons_term],
                           test_s,
                           prefix="test"),
                       TrainingDataMonitoring(
@@ -346,7 +359,7 @@ def main(name, model, epochs, batch_size, learning_rate, bokeh, layers, gamma,
                            aggregation.mean(algorithm.total_gradient_norm)],
                           prefix="train",
                           after_epoch=True),
-                      Dump(runname, every_n_epochs=10),
+                      Checkpoint(runname, every_n_epochs=10),
                       Printing()]
 
         if bokeh:

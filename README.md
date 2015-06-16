@@ -3,18 +3,17 @@ Example of a Variational-Autoencoder using Theano blocks
 
 Dependencies
 ------------
- * [Blocks](https://github.com/bartvm/blocks) follow
+ * [Blocks](https://github.com/mila-udem/blocks) follow
 the [install instructions](http://blocks.readthedocs.org/en/latest/setup.html).
 This will install all the other dependencies for you (Theano, Fuel, etc.).
 
 Notes
 -----
  * This is a work in progress
- * dropout does not work for now
  
 Example
 -------
-    > python VAE.py --gamma 0.01 --batch_size 1000
+    > python VAE.py --gamma 0.01 --batch-size 1000
         Training status:
          batch_interrupt_received: False
          epoch_interrupt_received: False
